@@ -178,7 +178,7 @@ class Chain(Serializable, ABC):
             include_run_info: Whether to include run info in the response. Defaults
                 to False.
         """
-        inputs = self.prep_inputs(inputs)
+        inputs = self.aprep_inputs(inputs)
         callback_manager = AsyncCallbackManager.configure(
             callbacks, self.callbacks, self.verbose, tags, self.tags
         )
@@ -197,7 +197,7 @@ class Chain(Serializable, ABC):
             await run_manager.on_chain_error(e)
             raise e
         await run_manager.on_chain_end(outputs)
-        final_outputs: Dict[str, Any] = self.prep_outputs(
+        final_outputs: Dict[str, Any] = self.aprep_outputs(
             inputs, outputs, return_only_outputs
         )
         if include_run_info:
@@ -350,3 +350,41 @@ class Chain(Serializable, ABC):
                 yaml.dump(chain_dict, f, default_flow_style=False)
         else:
             raise ValueError(f"{save_path} must be json or yaml")
+
+    async def aprep_inputs(self, inputs):
+        """Validate and prep inputs."""
+        if not isinstance(inputs, dict):
+            _input_keys = set(self.input_keys)
+            if self.memory is not None:
+                # If there are multiple input keys, but some get set by memory so that
+                # only one is not set, we can still figure out which key it is.
+                _input_keys = _input_keys.difference(self.memory.memory_variables)
+            if len(_input_keys) != 1:
+                raise ValueError(
+                    f"A single string input was passed in, but this chain expects "
+                    f"multiple inputs ({_input_keys}). When a chain expects "
+                    f"multiple inputs, please call it by passing in a dictionary, "
+                    "eg `chain({'foo': 1, 'bar': 2})`"
+                )
+            inputs = {list(_input_keys)[0]: inputs}
+        if self.memory is not None:
+            if inspect.iscoroutinefunction(self.memory.load_memory_variables):
+                external_context = await self.memory.load_memory_variables(inputs)
+            else:
+                external_context = self.memory.load_memory_variables(inputs)
+            inputs = dict(inputs, **external_context)
+        self._validate_inputs(inputs)
+        return inputs
+
+    async def aprep_outputs(self, inputs, outputs, return_only_outputs):
+        """Validate and prep outputs."""
+        self._validate_outputs(outputs)
+        if self.memory is not None:
+            if inspect.iscoroutinefunction(self.memory.save_context):
+                await self.memory.save_context(inputs, outputs)
+            else:
+                self.memory.save_context(inputs, outputs)
+        if return_only_outputs:
+            return outputs
+        else:
+            return {**inputs, **outputs}
