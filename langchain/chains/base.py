@@ -178,7 +178,7 @@ class Chain(Serializable, ABC):
             include_run_info: Whether to include run info in the response. Defaults
                 to False.
         """
-        inputs = self.aprep_inputs(inputs)
+        inputs = await self.aprep_inputs(inputs)
         callback_manager = AsyncCallbackManager.configure(
             callbacks, self.callbacks, self.verbose, tags, self.tags
         )
@@ -197,7 +197,7 @@ class Chain(Serializable, ABC):
             await run_manager.on_chain_error(e)
             raise e
         await run_manager.on_chain_end(outputs)
-        final_outputs: Dict[str, Any] = self.aprep_outputs(
+        final_outputs: Dict[str, Any] = await self.aprep_outputs(
             inputs, outputs, return_only_outputs
         )
         if include_run_info:
