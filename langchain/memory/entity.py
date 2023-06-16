@@ -354,6 +354,7 @@ class AsyncConversationEntityMemory(BaseChatMemory):
         :meta private:
         """
         return ["entities", self.chat_history_key]
+
     async def load_memory_variables(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Return history buffer."""
         chain = LLMChain(llm=self.llm, prompt=self.entity_extraction_prompt)
