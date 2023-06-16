@@ -351,7 +351,8 @@ class Chain(Serializable, ABC):
         else:
             raise ValueError(f"{save_path} must be json or yaml")
 
-    async def aprep_inputs(self, inputs):
+    async def aprep_inputs(self, inputs: Union[Dict[str, Any], Any]) -> Dict[str, str]:
+
         """Validate and prep inputs."""
         if not isinstance(inputs, dict):
             _input_keys = set(self.input_keys)
@@ -376,7 +377,12 @@ class Chain(Serializable, ABC):
         self._validate_inputs(inputs)
         return inputs
 
-    async def aprep_outputs(self, inputs, outputs, return_only_outputs):
+    async def aprep_outputs(
+            self,
+            inputs: Dict[str, str],
+            outputs: Dict[str, str],
+            return_only_outputs: bool = False,
+    ) -> Dict[str, str]:
         """Validate and prep outputs."""
         self._validate_outputs(outputs)
         if self.memory is not None:

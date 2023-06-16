@@ -240,93 +240,6 @@ class SQLiteEntityStore(BaseEntityStore):
             self.conn.execute(query)
 
 
-class AsyncpgEntityStore(BaseEntityStore):
-    conn: Optional[Any] = None
-    schema_name: str = "public"
-    table_name: str = "memory_store"
-
-    class Config:
-        arbitrary_types_allowed = True
-
-    def __init__(self, conn: Any, *args: Any, **kwargs: Any):
-        try:
-            import buildpg
-        except ImportError:
-            raise ImportError(
-                "Could not import buildpg python package. "
-                "Please install it with `pip install buildpg`."
-            )
-        super().__init__(*args, **kwargs)
-        self.conn = conn
-
-    @classmethod
-    async def from_connection(cls, conn: Any, *args, **kwargs):
-        instance = cls(conn, *args, **kwargs)
-        await cls._create_table_if_not_exists(instance)
-        return instance
-
-    async def delete(self, key: str) -> None:
-        query = f"""
-            DELETE FROM :table
-            WHERE key = :k
-        """
-        await self.conn.execute_b(
-            query, table=V(f"{self.schema_name}.{self.table_name}"), k=key
-        )
-
-    async def exists(self, key: str) -> bool:
-        query = f"""
-            SELECT 1
-            FROM :table
-            WHERE key = :k
-            LIMIT 1
-        """
-        result = await self.conn.fetch_b(
-            query, table=V(f"{self.schema_name}.{self.table_name}"), k=(key)
-        )
-        return result is not None
-
-    async def clear(self) -> None:
-        query = f"""
-            DELETE FROM :table
-        """
-        await self.conn.execute_b(query)
-
-    async def get(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        query = f"""
-            SELECT value
-            FROM :table
-            WHERE key = :k
-        """
-        result = await self.conn.fetchval_b(
-            query, table=V(f"{self.schema_name}.{self.table_name}"), k=key
-        )
-        if result is not None:
-            return result
-        return default
-
-    async def set(self, key: str, value: Optional[str]) -> None:
-        if not value:
-            return await self.delete(key)
-        query = """
-            INSERT INTO :table (key, value)
-            VALUES (:k, :v)
-            on conflict (key) do update set value = excluded.value
-        """
-        await self.conn.execute_b(
-            query, table=V(f"{self.schema_name}.{self.table_name}"), k=key, v=value
-        )
-
-    async def _create_table_if_not_exists(self) -> None:
-        create_table_query = f"""CREATE TABLE IF NOT EXISTS :table (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        );"""
-        await self.conn.execute_b(
-            create_table_query, table=V(f"{self.schema_name}.{self.table_name}")
-        )
-
-
 class ConversationEntityMemory(BaseChatMemory):
     """Entity extractor & summarizer to memory."""
 
@@ -419,7 +332,28 @@ class ConversationEntityMemory(BaseChatMemory):
         self.entity_store.clear()
 
 
-class AsyncConversationEntityMemory(ConversationEntityMemory):
+class AsyncConversationEntityMemory(BaseChatMemory):
+    human_prefix: str = "Human"
+    ai_prefix: str = "AI"
+    llm: BaseLanguageModel
+    entity_extraction_prompt: BasePromptTemplate = ENTITY_EXTRACTION_PROMPT
+    entity_summarization_prompt: BasePromptTemplate = ENTITY_SUMMARIZATION_PROMPT
+    entity_cache: List[str] = []
+    k: int = 3
+    chat_history_key: str = "history"
+    entity_store: BaseEntityStore = Field(default_factory=InMemoryEntityStore)
+
+    @property
+    def buffer(self) -> List[BaseMessage]:
+        return self.chat_memory.messages
+
+    @property
+    def memory_variables(self) -> List[str]:
+        """Will always return list of memory variables.
+
+        :meta private:
+        """
+        return ["entities", self.chat_history_key]
     async def load_memory_variables(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Return history buffer."""
         chain = LLMChain(llm=self.llm, prompt=self.entity_extraction_prompt)
