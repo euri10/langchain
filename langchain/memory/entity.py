@@ -240,6 +240,93 @@ class SQLiteEntityStore(BaseEntityStore):
             self.conn.execute(query)
 
 
+class AsyncpgEntityStore(BaseEntityStore):
+    conn: BuildPgConnection | None = None
+    schema_name: str = "public"
+    table_name: str = "memory_store"
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def __init__(self, conn: BuildPgConnection, *args: Any, **kwargs: Any):
+        try:
+            import buildpg
+        except ImportError:
+            raise ImportError(
+                "Could not import buildpg python package. "
+                "Please install it with `pip install buildpg`."
+            )
+        super().__init__(*args, **kwargs)
+        self.conn = conn
+
+    @classmethod
+    async def from_connection(cls, conn: BuildPgConnection, *args, **kwargs):
+        instance = cls(conn, *args, **kwargs)
+        await cls._create_table_if_not_exists(instance)
+        return instance
+
+    async def delete(self, key: str) -> None:
+        query = f"""
+            DELETE FROM :table
+            WHERE key = :k
+        """
+        await self.conn.execute_b(
+            query, table=V(f"{self.schema_name}.{self.table_name}"), k=key
+        )
+
+    async def exists(self, key: str) -> bool:
+        query = f"""
+            SELECT 1
+            FROM :table
+            WHERE key = :k
+            LIMIT 1
+        """
+        result = await self.conn.fetch_b(
+            query, table=V(f"{self.schema_name}.{self.table_name}"), k=(key)
+        )
+        return result is not None
+
+    async def clear(self) -> None:
+        query = f"""
+            DELETE FROM :table
+        """
+        await self.conn.execute_b(query)
+
+    async def get(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        query = f"""
+            SELECT value
+            FROM :table
+            WHERE key = :k
+        """
+        result = await self.conn.fetchval_b(
+            query, table=V(f"{self.schema_name}.{self.table_name}"), k=key
+        )
+        if result is not None:
+            return result
+        return default
+
+    async def set(self, key: str, value: Optional[str]) -> None:
+        if not value:
+            return await self.delete(key)
+        query = """
+            INSERT INTO :table (key, value)
+            VALUES (:k, :v)
+            on conflict (key) do update set value = excluded.value
+        """
+        await self.conn.execute_b(
+            query, table=V(f"{self.schema_name}.{self.table_name}"), k=key, v=value
+        )
+
+    async def _create_table_if_not_exists(self) -> None:
+        create_table_query = f"""CREATE TABLE IF NOT EXISTS :table (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        );"""
+        await self.conn.execute_b(
+            create_table_query, table=V(f"{self.schema_name}.{self.table_name}")
+        )
+
+
 class ConversationEntityMemory(BaseChatMemory):
     """Entity extractor & summarizer to memory."""
 
@@ -330,3 +417,73 @@ class ConversationEntityMemory(BaseChatMemory):
         self.chat_memory.clear()
         self.entity_cache.clear()
         self.entity_store.clear()
+
+
+class AsyncConversationEntityMemory(ConversationEntityMemory):
+    async def load_memory_variables(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Return history buffer."""
+        chain = LLMChain(llm=self.llm, prompt=self.entity_extraction_prompt)
+        if self.input_key is None:
+            prompt_input_key = get_prompt_input_key(inputs, self.memory_variables)
+        else:
+            prompt_input_key = self.input_key
+        buffer_string = get_buffer_string(
+            self.buffer[-self.k * 2 :],
+            human_prefix=self.human_prefix,
+            ai_prefix=self.ai_prefix,
+        )
+        output = await chain.apredict(
+            history=buffer_string,
+            input=inputs[prompt_input_key],
+        )
+        if output.strip() == "NONE":
+            entities = []
+        else:
+            entities = [w.strip() for w in output.split(",")]
+        entity_summaries = {}
+        for entity in entities:
+            entity_summaries[entity] = await self.entity_store.get(entity, "")
+        self.entity_cache = entities
+        if self.return_messages:
+            buffer: Any = self.buffer[-self.k * 2 :]
+        else:
+            buffer = buffer_string
+        return {
+            self.chat_history_key: buffer,
+            "entities": entity_summaries,
+        }
+
+    async def save_context(
+        self, inputs: dict[str, Any], outputs: dict[str, str]
+    ) -> None:
+        """Save context from this conversation to buffer."""
+        super().save_context(inputs, outputs)
+
+        if self.input_key is None:
+            prompt_input_key = get_prompt_input_key(inputs, self.memory_variables)
+        else:
+            prompt_input_key = self.input_key
+
+        buffer_string = get_buffer_string(
+            self.buffer[-self.k * 2 :],
+            human_prefix=self.human_prefix,
+            ai_prefix=self.ai_prefix,
+        )
+        input_data = inputs[prompt_input_key]
+        chain = LLMChain(llm=self.llm, prompt=self.entity_summarization_prompt)
+
+        for entity in self.entity_cache:
+            existing_summary = await self.entity_store.get(entity, "")
+            output = chain.predict(
+                summary=existing_summary,
+                entity=entity,
+                history=buffer_string,
+                input=input_data,
+            )
+            await self.entity_store.set(entity, output.strip())
+
+    async def clear(self) -> None:
+        """Clear memory contents."""
+        self.chat_memory.clear()
+        self.entity_cache.clear()
+        await self.entity_store.clear()
