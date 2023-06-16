@@ -241,14 +241,14 @@ class SQLiteEntityStore(BaseEntityStore):
 
 
 class AsyncpgEntityStore(BaseEntityStore):
-    conn: BuildPgConnection | None = None
+    conn: Optional[Any] = None
     schema_name: str = "public"
     table_name: str = "memory_store"
 
     class Config:
         arbitrary_types_allowed = True
 
-    def __init__(self, conn: BuildPgConnection, *args: Any, **kwargs: Any):
+    def __init__(self, conn: Any, *args: Any, **kwargs: Any):
         try:
             import buildpg
         except ImportError:
@@ -260,7 +260,7 @@ class AsyncpgEntityStore(BaseEntityStore):
         self.conn = conn
 
     @classmethod
-    async def from_connection(cls, conn: BuildPgConnection, *args, **kwargs):
+    async def from_connection(cls, conn: Any, *args, **kwargs):
         instance = cls(conn, *args, **kwargs)
         await cls._create_table_if_not_exists(instance)
         return instance
